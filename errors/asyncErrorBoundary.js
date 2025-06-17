@@ -14,4 +14,3 @@ const asyncErrorBoundary = (delegate, defaultStatus = 500) => {
 
 module.exports = asyncErrorBoundary;
 
-  
