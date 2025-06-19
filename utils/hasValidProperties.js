@@ -17,4 +17,4 @@ function hasValidProperties(...validProperties) {
     };
   }
   
-  module.exports = hasValidProperties;
+export default hasValidProperties;

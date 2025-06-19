@@ -5,8 +5,8 @@ const errorHandler = (error, request, response, next) => {
     message = "An unexpected error occurred";
   }
 
-  console.log(error); // log for now, in the future switch to winston and log to db
+  console.error(error); // log for now, in the future switch to winston and log to db
   response.status(status).json({ error: message });
 };
 
-module.exports = errorHandler;
+export default errorHandler;

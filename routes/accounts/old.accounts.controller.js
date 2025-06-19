@@ -1,8 +1,8 @@
 const becrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const asyncErrorBoundary = require("../../errors/asyncErrorBoundary");
-const hasProperties = require("../../errors/hasProperties");
-const hasValidProperties = require("../../errors/hasValidProperties");
+const hasProperties = require("../../utils/hasProperties");
+const hasValidProperties = require("../../utils/hasValidProperties");
 const crypto = require("crypto");
 const { resolve } = require("path");
 const validator = require("validator");
