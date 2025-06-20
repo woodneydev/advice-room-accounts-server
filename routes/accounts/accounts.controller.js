@@ -6,71 +6,66 @@ import asyncErrorBoundary from "../../errors/asyncErrorBoundary.js"
 import hasProperties from "../../utils/hasProperties.js";
 import hasValidProperties from "../../utils/hasValidProperties.js";
 import crypto from "crypto";
-import { resolve } from "path"
+import { resolve } from "path";
+import handleErrors from "../../errors/errorLogging.js";
+import isMobileApp from "../../utils/isMobileApp.js";
 
-//Helper functions
+//Helper functions - - - - - - - - - - - - - - - - - - - -
 const hashData = async (password, saltRounds = 12) => {
-  try {
-    const salt = await bcrypt.genSalt(saltRounds);
-    const hash = await bcrypt.hash(password, salt);
-    return hash;
-  } catch (error) {
-    throw new Error(`${error}`);
-  }
+  const salt = await becrypt.genSalt(saltRounds);
+  const hash = await becrypt.hash(password, salt);
+  return hash;
 };
 
 const compareHashedData = async (password, hash) => {
-  try {
-    const matchFound = await bcrypt.compare(password, hash);
-    return matchFound;
-  } catch (error) {
-    throw new Error(`${error}`);
-  }
+  const matchFound = await becrypt.compare(password, hash);
+  return matchFound;
 };
 
-const generateRandomCode = () => {
+const generateRandomCode = (codeLength = 6) => {
   const characters =
     "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
   let code = "";
 
-  for (let i = 0; i < 6; i++) {
-    const randomIndex = Math.floor(Math.random() * characters.length);
-    code += characters.charAt(randomIndex);
+  for (let i = 0; i < codeLength; i++) {
+    const randomIndex = crypto.randomInt(0, characters.length);
+    code += characters[randomIndex];
   }
 
   return code;
 };
 
-const generateToken = async (user, remember) => {
-  try {
-    const accessToken = await jwt.sign(
-      {
-        id: user.id,
-        email: user.email,
-        ver: process.env.CURRENT_ACCESS_TOKEN_VERSION,
-      },
-      process.env.JWT_ACCESS_TOKEN_SECRET,
-      { expiresIn: "1h" }
-    );
-    const refreshToken = await jwt.sign(
-      {
-        id: user.id,
-        email: user.email,
-        ver: process.env.CURRENT_REFRESH_TOKEN_VERSION,
-      },
-      process.env.JWT_REFRESH_TOKEN_SECRET,
-      { expiresIn: remember ? "7d" : "24h" }
-    );
+const generateToken = async (user) => {
+  const accessToken = await jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      ver: process.env.CURRENT_ACCESS_TOKEN_VERSION,
+    },
+    process.env.JWT_ACCESS_TOKEN_SECRET,
+    { expiresIn: "15m" }
+  );
 
-    return { accessToken, refreshToken };
-  } catch (error) {
-    throw error;
-  }
+  const refreshToken = await jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      ver: process.env.CURRENT_REFRESH_TOKEN_VERSION,
+    },
+    process.env.JWT_REFRESH_TOKEN_SECRET,
+    { expiresIn: "7d" }
+  );
+
+  return { accessToken, refreshToken };
 };
 
-const verifyToken = (token) => {
+const verifyToken = (token, type = "access") => {
+  let key;
+  if (type === "access") key = process.env.JWT_ACCESS_TOKEN_SECRET;
+  if (type === "refresh") key = process.env.JWT_REFRESH_TOKEN_SECRET;
+
   return new Promise((resolve, reject) => {
-    jwt.verify(token, process.env.JWT_KEY, (err, decoded) => {
+    jwt.verify(token, key, (err, decoded) => {
       if (err) {
         reject(err);
       } else {
@@ -80,15 +75,42 @@ const verifyToken = (token) => {
   });
 };
 
-const handleErrors = require("../../utils/errorLogging");
 
 //Add functionality later
-const sendEmail = () => {
-
+const sendEmail = (
+  to,
+  subject,
+  text,
+  from = "Advice Room <admin@adviceroom.findOut"
+) => {
+  const apiKey = process.env.MAILGUN_API_KEY;
+  const domain = "adviceroom.net";
+  const mg = mailgun({ apiKey, domain });
+  const data = { from, to, subject, text };
+  return new Promise((resolve, reject) => {
+    mg.messages().send(data, (error, body) => {
+      if (error) {
+        return reject(error);
+      } else {
+        return resolve(body);
+      }
+    });
+  });
 };
 
-//Validation Middleware
-const isMobileApp = require("../../utils/isMobileApp");
+const isStrongPassword = (password) => {
+  const hasNoSpaces = !/\s/.test(password);
+  const isValidStrongPassword = validator.isStrongPassword(password, {
+    minLength: 8,
+    minLowercase: 1,
+    minUppercase: 1,
+    minNumbers: 1,
+    minSymbols: 1,
+  });
+  return isValidStrongPassword && hasNoSpaces;
+};
+
+//Validation Middleware - - - - - - - - - - - - - - - - - - - -
 const validRegisterProps = ["first_name", "last_name", "email", "password"];
 const areRegistrationFieldsValid = hasValidProperties(validRegisterProps);
 
@@ -100,31 +122,6 @@ const areLoginFieldsValid = hasValidProperties(validLoginProps);
 
 const requiredLoginFields = ["email", "password"];
 const hasAllLoginFields = hasRequiredProperties(requiredLoginFields);
-
-const isStrongPassword = (req, res, next) => {
-  const { password } = req.body;
-  const minLength = 8;
-  const hasUppercase = /[A-Z]/.test(password);
-  const hasLowercase = /[a-z]/.test(password);
-  const hasDigit = /\d/.test(password);
-  const hasSpecialChar = /[!@#$%^&*()_+{}\[\]:;<>,.?~\\-]/.test(password);
-
-  if (
-    password.length >= minLength &&
-    hasUppercase &&
-    hasLowercase &&
-    hasDigit &&
-    hasSpecialChar
-  ) {
-    return next();
-  } else {
-    return next({
-      status: 400,
-      message:
-        "Password must have at least 8 characters, including an uppercase letter, a lowercase letter, a digit, and a special character.",
-    });
-  }
-};
 
 const isValidName = (req, res, next) => {
   const { first_name, last_name } = req.body;
@@ -152,6 +149,7 @@ const isValidName = (req, res, next) => {
   }
 };
 
+//errors in this function and similar would go to error handler - check that code so error messages don't get send to api users
 const isValidEmail = (req, res, next) => {
   const { email } = req.body;
   const emailPattern = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
@@ -167,20 +165,12 @@ const isValidEmail = (req, res, next) => {
 
 const isAlreadyUser = async (req, res, next) => {
   const { email } = req.body;
-  try {
-    const user = await service.findByEmail(email);
-    if (user) {
-      return next({ status: 409, message: `User: ${email} already exists.` });
-    } else {
-      res.locals.user = req.body;
-      return next();
-    }
-  } catch (error) {
-    handleErrors(error);
-    return next({
-      status: 500,
-      message: `Internal server error. Unable to verify whether ${email} is already a user. Please try again later.`,
-    });
+  const user = await service.findByEmail(email);
+  if (user) {
+    return next({ status: 409, message: `User: ${email} already exists.` });
+  } else {
+    res.locals.user = req.body;
+    return next();
   }
 };
 
@@ -191,29 +181,22 @@ const formatUser = (req, res, next) => {
 
 const doesUserExist = async (req, res, next) => {
   const { email } = req.user;
-  try {
-    const user = await service.findByEmail(email);
-    if (user) {
-      res.locals.user = {
-        id: user.id,
-        name: user.first_name,
-        email: user.email,
-        password: user.password,
-      };
-      return next();
-    } else {
-      return next({
-        status: 409,
-        message: `User: ${email} does not exist. Please register for access.`,
-      });
-    }
-  } catch (error) {
-    handleErrors(error);
+  const user = await service.findByEmail(email);
+  if (user) {
+    res.locals.user = {
+      id: user.id,
+      name: user.first_name,
+      email: user.email,
+      password: user.password,
+    };
+    return next();
+  } else {
     return next({
-      status: 500,
-      message: `Internal server error. Could not find email entry for ${email}. Please try logging in later.`,
+      status: 409,
+      message: `User: ${email} does not exist. Please register for access.`,
     });
   }
+
 };
 
 const doesPasswordMatch = (req, res, next) => {
@@ -586,7 +569,7 @@ const addMiddleware = [
   isValidName,
   isValidEmail,
   isStrongPassword,
-  isAlreadyUser,
+  asyncErrorBoundary(isAlreadyUser, "user registraton verification"),
   addUser,
   // sendVerificationEmail,
   add,
@@ -607,17 +590,17 @@ const loginMiddleware = [
 
 //Exported as current
 const currentMiddleware = [
-  isMobileApp, 
-  authorize, 
-  doesUserExist, 
+  isMobileApp,
+  authorize,
+  asyncErrorBoundary(doesUserExist, 'user current verification'),
   sendNewToken
 ];
 
 //Exported as verify
 const verifyMiddleware = [
-  isMobileApp, 
-  authorize, 
-  verifyEmail, 
+  isMobileApp,
+  authorize,
+  verifyEmail,
   verified
 ];
 
