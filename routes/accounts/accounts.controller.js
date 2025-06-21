@@ -3,6 +3,7 @@ import jwt, { verify } from "jsonwebtoken";
 import validator from "validator";
 import service from "./accounts.service.js";
 import asyncErrorBoundary from "../../errors/asyncErrorBoundary.js"
+import syncErrorBoundary from "../../errors/syncErrorBoundary.js";
 import hasProperties from "../../utils/hasProperties.js";
 import hasValidProperties from "../../utils/hasValidProperties.js";
 import crypto from "crypto";
@@ -111,6 +112,8 @@ const isStrongPassword = (password) => {
 };
 
 //Validation Middleware - - - - - - - - - - - - - - - - - - - -
+
+//For the property verification functions, examine try/catch vs syncError Boundary
 const validRegisterProps = ["first_name", "last_name", "email", "password"];
 const areRegistrationFieldsValid = hasValidProperties(validRegisterProps);
 
@@ -202,47 +205,29 @@ const doesUserExist = async (req, res, next) => {
 const doesPasswordMatch = (req, res, next) => {
   const { password } = req.body;
   const { password: hash } = res.locals.user;
-
-  try {
-    const match = compareHashedData(password, hash);
-    if (match) {
-      return next();
-    } else {
-      return next({ status: 400, message: `Incorrect password.` });
-    }
-  } catch (error) {
-    handleErrors(error);
-    return next({
-      status: 500,
-      message: `Internal server error. Could not validate password. Please try logging in later.`,
-    });
+  const match = compareHashedData(password, hash);
+  if (match) {
+    return next();
+  } else {
+    return next({ status: 400, message: `Incorrect password.` });
   }
 };
 
 const addUser = async (req, res, next) => {
   const { first_name, last_name, email, password } = res.locals.user;
-  console.log("firstName ", first_name);
-  try {
-    const hashedPassword = await hashData(password);
-    const verification_number = await hashData(generateRandomCode());
-    const user = {
-      first_name,
-      last_name,
-      email,
-      password: hashedPassword,
-      verification_number,
-    };
-    const newUser = await service.insertUser(user);
-    console.log("newuser => ", newUser);
-    res.locals.user = newUser;
-    next();
-  } catch (error) {
-    handleErrors(error);
-    return next({
-      status: 500,
-      message: `Internal server error registering ${email}. Please try again later`,
-    });
-  }
+  const hashedPassword = await hashData(password);
+  const verification_number = await hashData(generateRandomCode());
+  const user = {
+    first_name,
+    last_name,
+    email,
+    password: hashedPassword,
+    verification_number,
+  };
+  const newUser = await service.insertUser(user);
+  res.locals.user = newUser;
+  next();
+
 };
 
 const authorize = (req, res, next) => {
@@ -370,78 +355,69 @@ const sendNewToken = async (req, res, next) => {
   }
 
   let newTokens;
+  newTokens = await refreshTokens(refreshToken, remember);
+  const { id } = req.user;
+  const updatedRecord = await service.updateRefreshToken(
+    id,
+    newTokens.newRefreshToken
+  );
+  if (!updatedRecord)
+    throw "Unable to send new tokens, please try logging in again.";
+}
+
+const { newAccessToken, newRefreshToken } = newTokens;
+
+if (res.locals.userAgent === "web") {
   try {
-    newTokens = await refreshTokens(refreshToken, remember);
-    const { id } = req.user;
-    const updatedRecord = await service.updateRefreshToken(
-      id,
-      newTokens.newRefreshToken
-    );
-    if (!updatedRecord)
-      throw "Unable to send new tokens, please try logging in again.";
+    res.cookie("refreshToken", newRefreshToken, {
+      httpOnly: true,
+      // secure: true,
+      origin: process.env.ADMIN_CORS_ORIGIN || "http://localhost:5173",
+      // sameSite: "strict",
+      maxAge: remember ? 7 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000, // 24 hours
+    });
+    res.cookie("accessToken", newAccessToken, {
+      httpOnly: true,
+      // secure: true,
+      origin: process.env.ADMIN_CORS_ORIGIN || "http://localhost:5173",
+      // sameSite: "strict",
+      maxAge: 60 * 60 * 1000, // 1hr
+    });
+    res
+      .status(200)
+      .json({ user: { id: user.id, name: user.name }, isLoggedIn: true });
   } catch (error) {
-    handleErrors(error);
-    return next({
+    next({
       status: 500,
       message:
-        "Internal server error. Was unable to generate new refresh token. Please login again.",
+        "Something went wrong. Internal server error while attempting to login.",
     });
   }
-
-  const { newAccessToken, newRefreshToken } = newTokens;
-
-  if (res.locals.userAgent === "web") {
-    try {
-      res.cookie("refreshToken", newRefreshToken, {
-        httpOnly: true,
-        // secure: true,
-        origin: process.env.ADMIN_CORS_ORIGIN || "http://localhost:5173",
-        // sameSite: "strict",
-        maxAge: remember ? 7 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000, // 24 hours
+} else if (res.locals.userAgent === "mobile") {
+  try {
+    res
+      .status(200)
+      .json({
+        refreshToken: newRefreshToken,
+        accessToken: newAccessToken,
+        user: { id: user.id, name: user.name },
+        isLoggedIn: true,
       });
-      res.cookie("accessToken", newAccessToken, {
-        httpOnly: true,
-        // secure: true,
-        origin: process.env.ADMIN_CORS_ORIGIN || "http://localhost:5173",
-        // sameSite: "strict",
-        maxAge: 60 * 60 * 1000, // 1hr
-      });
-      res
-        .status(200)
-        .json({ user: { id: user.id, name: user.name }, isLoggedIn: true });
-    } catch (error) {
-      next({
-        status: 500,
-        message:
-          "Something went wrong. Internal server error while attempting to login.",
-      });
-    }
-  } else if (res.locals.userAgent === "mobile") {
-    try {
-      res
-        .status(200)
-        .json({
-          refreshToken: newRefreshToken,
-          accessToken: newAccessToken,
-          user: { id: user.id, name: user.name },
-          isLoggedIn: true,
-        });
-    } catch (error) {
-      handleErrors(error);
-      next({
-        status: 500,
-        message:
-          "Something went wrong. Internal server error creating login token.",
-      });
-    }
+  } catch (error) {
+    handleErrors(error);
+    next({
+      status: 500,
+      message:
+        "Something went wrong. Internal server error creating login token.",
+    });
   }
-};
+}
+
 
 const sendVerificationEmail = async (req, res, next) => {
   const { user } = res.locals;
   const { refreshToken, accessToken } = await generateToken(user);
   const text = `To verify account please navigate to: https://localhost/accounts/verify?user=${token}?code=${user.verification_number}`;
-  console.log("verify_link ==> ", text);
   return next();
   //Right now email service is not working, need to ask michael about api key = won't work domains other than cpi it seems.
 };
@@ -470,7 +446,6 @@ const verifyEmail = async (req, res, next) => {
 //Route Handlers
 const add = (req, res) => {
   const user = res.locals.user;
-  console.log("user ->", user);
   res
     .status(200)
     .json({
@@ -481,19 +456,14 @@ const add = (req, res) => {
 };
 
 const login = async (req, res, next) => {
-  console.log("made it here login");
-
   const { user } = res.locals;
-  console.log(user);
   if (res.locals.userAgent === "web") {
     try {
       const { refreshToken, accessToken } = await generateToken(
         user,
         user.remember
       );
-      console.log(user.id);
       await service.updateRefreshToken(user.id, refreshToken);
-      console.log("did it get here");
       res.cookie("refreshToken", refreshToken, {
         httpOnly: true,
         // secure: true,
@@ -544,17 +514,20 @@ const verified = (req, res) => {
 };
 
 const logout = (req, res) => {
+  const env = process.env.ENV;
+  const additionalProps = env === 'dev' ? {} : env === "prod" ? {
+    secure: true,
+    sameSite: "strict"
+  } : {}
   res.clearCookie("accessToken", {
     httpOnly: true,
     origin: process.env.ADMIN_CORS_ORIGIN || "http://localhost:5173",
-    // secure: true,
-    // sameSite: "strict",
+    ...additionalProps
   });
   res.clearCookie("refreshToken", {
     httpOnly: true,
     origin: process.env.ADMIN_CORS_ORIGIN || "http://localhost:5173",
-    // secure: true,
-    // sameSite: "strict",
+    ...additionalProps
   });
   res.status(200).json({ isLoggedIn: false });
 };
@@ -568,9 +541,9 @@ const addMiddleware = [
   hasAllRegisterFields,
   isValidName,
   isValidEmail,
-  isStrongPassword,
-  asyncErrorBoundary(isAlreadyUser, "user registraton verification"),
-  addUser,
+  syncErrorBoundary(isStrongPassword, "registration - password verification"),
+  asyncErrorBoundary(isAlreadyUser, "registraton - user verification"),
+  asyncErrorBoundary(addUser),
   // sendVerificationEmail,
   add,
 ];
@@ -583,8 +556,8 @@ const loginMiddleware = [
   isValidEmail,
   isStrongPassword,
   formatUser,
-  doesUserExist,
-  doesPasswordMatch,
+  asyncErrorBoundary(doesUserExist, 'login - user verification'),
+  syncErrorBoundary(doesPasswordMatch, 'login - password validation'),
   login,
 ];
 
@@ -592,14 +565,14 @@ const loginMiddleware = [
 const currentMiddleware = [
   isMobileApp,
   authorize,
-  asyncErrorBoundary(doesUserExist, 'user current verification'),
-  sendNewToken
+  asyncErrorBoundary(doesUserExist, 'current - user verification'),
+  asyncErrorBoundary(sendNewToken, 'current - token creation')
 ];
 
 //Exported as verify
 const verifyMiddleware = [
   isMobileApp,
-  authorize,
+  syncErrorBoundary(authorize, 'verify - user authorization'),
   verifyEmail,
   verified
 ];
